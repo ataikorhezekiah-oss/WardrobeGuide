@@ -1,0 +1,8 @@
+{
+  "name": "AI Wardrobe Guide",
+  "description": "A real-time wardrobe assistant that uses your camera to analyze your outfit and provide stylish suggestions.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
