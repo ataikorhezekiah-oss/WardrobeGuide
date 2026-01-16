@@ -7,10 +7,6 @@ import { CameraIcon, StopCircleIcon } from './components/Icons';
 import { useCamera } from './hooks/useCamera';
 import { encode, decode, decodeAudioData } from './utils/audio';
 
-// FIX: Removed the conflicting global declaration for `window.aistudio`.
-// The TypeScript error indicates that this property is already typed globally,
-// and this redeclaration was causing a type conflict.
-
 const PROMPT = `You are a world-class AI fashion stylist having a friendly, real-time voice conversation. Your goal is to provide helpful, concise, and encouraging feedback on a user's outfit as you see it through their camera. Keep your responses short and conversational.
 
 Analyze the outfit in the image and comment on what you see. Provide actionable suggestions for improvement. Acknowledge the user's speech and respond naturally.
@@ -22,46 +18,7 @@ interface TranscriptItem {
     text: string;
 }
 
-// Component for API Key selection
-const ApiKeySelectionScreen: React.FC<{ onSelectApiKey: () => void; error?: string | null }> = ({ onSelectApiKey, error }) => (
-    <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
-        <div className="w-full max-w-md bg-white dark:bg-gray-800 p-8 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-                <span className="text-indigo-500">AI</span> Wardrobe Guide
-            </h1>
-            <p className="mt-4 text-gray-600 dark:text-gray-300">
-                This application requires a Google AI API key to function. Please select a key from a paid Google Cloud project.
-            </p>
-            <a 
-                href="https://ai.google.dev/gemini-api/docs/billing" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="mt-2 inline-block text-sm text-indigo-500 hover:underline"
-            >
-                Learn more about billing
-            </a>
-            
-            {error && (
-                <div className="mt-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">
-                    <p>{error}</p>
-                </div>
-            )}
-
-            <button
-                onClick={onSelectApiKey}
-                className="mt-6 w-full flex items-center justify-center px-4 py-2 rounded-lg font-semibold text-white bg-indigo-500 hover:bg-indigo-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-indigo-400 transition-colors duration-300"
-            >
-                Select API Key
-            </button>
-        </div>
-    </div>
-);
-
-
 const App: React.FC = () => {
-    // API Key State
-    const [apiKeySelected, setApiKeySelected] = useState(false);
-    
     // Media and Camera
     const { stream: videoStream, error: cameraError, startCamera, stopCamera } = useCamera();
     const micStreamRef = useRef<MediaStream | null>(null);
@@ -84,37 +41,6 @@ const App: React.FC = () => {
     const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
     const inputAudioContextRef = useRef<AudioContext | null>(null);
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
-
-    // Check for API key on mount
-    useEffect(() => {
-        const checkApiKey = async () => {
-            if (window.aistudio) {
-                try {
-                    const hasKey = await window.aistudio.hasSelectedApiKey();
-                    setApiKeySelected(hasKey);
-                } catch (e) {
-                    console.error("Error checking for API key:", e);
-                    setApiKeySelected(false);
-                }
-            } else {
-                console.warn("window.aistudio is not available.");
-            }
-        };
-        checkApiKey();
-    }, []);
-
-    const handleSelectApiKey = async () => {
-        if (window.aistudio) {
-            try {
-                await window.aistudio.openSelectKey();
-                setApiKeySelected(true);
-                setSessionError(null);
-            } catch (e) {
-                console.error("Error opening API key selection:", e);
-                setSessionError("Could not open the API key selection dialog.");
-            }
-        }
-    };
 
     const stopSession = useCallback(() => {
         if (sessionPromiseRef.current) {
@@ -262,17 +188,8 @@ const App: React.FC = () => {
                     },
                     onerror: (e: ErrorEvent) => {
                         console.error('Session error:', e);
-                        const errorMessage = (e as any).message || (e as any).error?.message || '';
-                        
-                        if (errorMessage.includes('Requested entity was not found.')) {
-                            setSessionError("Your API key is invalid. Please select a new key from a project with billing enabled.");
-                            setApiKeySelected(false);
-                        } else if (errorMessage.includes('API Key not found')) {
-                            setSessionError("API Key not found. Please select an API key to continue.");
-                            setApiKeySelected(false);
-                        } else {
-                            setSessionError("A connection error occurred. Please try again.");
-                        }
+                        const errorMessage = (e as any).message || (e as any).error?.message || 'A connection error occurred. Please check your API key and network connection.';
+                        setSessionError(errorMessage);
                         stopSession();
                     },
                     onclose: () => console.log('Session closed'),
@@ -282,12 +199,7 @@ const App: React.FC = () => {
         } catch (err) {
             console.error("Failed to start session:", err);
             if (err instanceof Error) {
-                 if (err.message.includes('API Key must be set')) {
-                    setSessionError("An API Key is required. Please select one to continue.");
-                    setApiKeySelected(false);
-                } else {
-                    setSessionError(`Error: ${err.message}. Please check permissions.`);
-                }
+                setSessionError(`Error: ${err.message}. Please check permissions and API Key.`);
             } else {
                 setSessionError("An unknown error occurred while starting the session.");
             }
@@ -317,10 +229,6 @@ const App: React.FC = () => {
         };
     }, [stopSession]);
 
-    if (!apiKeySelected) {
-        return <ApiKeySelectionScreen onSelectApiKey={handleSelectApiKey} error={sessionError} />;
-    }
-
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans">
             <header className="bg-white dark:bg-gray-800 shadow-md">
@@ -342,7 +250,7 @@ const App: React.FC = () => {
                 </div>
             </header>
             
-            {sessionError && !apiKeySelected && (
+            {sessionError && (
                 <div className="container mx-auto px-4 pt-4">
                     <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative" role="alert">
                         <strong className="font-bold">Error: </strong>
