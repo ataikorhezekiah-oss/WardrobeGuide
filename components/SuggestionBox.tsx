@@ -1,5 +1,6 @@
 
 import React, { useEffect, useRef } from 'react';
+import { MicrophoneIcon } from './Icons';
 
 interface TranscriptItem {
     speaker: 'user' | 'model';
@@ -9,6 +10,7 @@ interface TranscriptItem {
 interface SuggestionBoxProps {
     transcript: TranscriptItem[];
     isModelSpeaking: boolean;
+    isListening: boolean;
 }
 
 const ModelTypingIndicator: React.FC = () => (
@@ -19,15 +21,22 @@ const ModelTypingIndicator: React.FC = () => (
     </div>
 );
 
+const ListeningIndicator: React.FC = () => (
+    <div className="flex items-center space-x-2 p-3 bg-indigo-100 dark:bg-indigo-900/50 rounded-lg">
+        <MicrophoneIcon className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+        <span className="text-sm text-indigo-600 dark:text-indigo-300">Listening...</span>
+    </div>
+);
 
-export const SuggestionBox: React.FC<SuggestionBoxProps> = ({ transcript, isModelSpeaking }) => {
+
+export const SuggestionBox: React.FC<SuggestionBoxProps> = ({ transcript, isModelSpeaking, isListening }) => {
     const scrollRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
-    }, [transcript, isModelSpeaking]);
+    }, [transcript, isModelSpeaking, isListening]);
 
     return (
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 h-full border border-gray-200 dark:border-gray-700 flex flex-col" style={{maxHeight: '75vh'}}>
@@ -35,7 +44,7 @@ export const SuggestionBox: React.FC<SuggestionBoxProps> = ({ transcript, isMode
                 Conversation
             </h2>
             <div ref={scrollRef} className="flex-grow overflow-y-auto pr-2 -mr-2 space-y-4">
-                {transcript.length === 0 && !isModelSpeaking && (
+                {transcript.length === 0 && !isModelSpeaking && !isListening && (
                      <div className="flex items-center justify-center h-full">
                         <p className="text-gray-500 dark:text-gray-400 text-center px-4">Start a session to begin your live style consultation.</p>
                      </div>
@@ -50,6 +59,11 @@ export const SuggestionBox: React.FC<SuggestionBoxProps> = ({ transcript, isMode
                         </div>
                     </div>
                 ))}
+                 {isListening && (
+                    <div className="flex justify-end">
+                        <ListeningIndicator />
+                    </div>
+                )}
                 {isModelSpeaking && (
                     <div className="flex justify-start">
                         <ModelTypingIndicator />

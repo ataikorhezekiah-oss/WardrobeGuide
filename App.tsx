@@ -27,6 +27,8 @@ const App: React.FC = () => {
     const [isSessionActive, setIsSessionActive] = useState(false);
     const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
     const [isModelSpeaking, setIsModelSpeaking] = useState(false);
+    const [isListening, setIsListening] = useState(false);
+    const [sessionError, setSessionError] = useState<string | null>(null);
     
     // Transcript
     const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
@@ -74,12 +76,16 @@ const App: React.FC = () => {
 
             setIsSessionActive(false);
             setTranscript([]);
+            setIsListening(false);
+            setIsModelSpeaking(false);
+            setSessionError(null);
             return;
         }
 
         // Start session
         setIsSessionActive(true);
         setTranscript([]);
+        setSessionError(null);
         startCamera(); // Start video feed
 
         try {
@@ -126,14 +132,47 @@ const App: React.FC = () => {
                         scriptProcessorRef.current.connect(inputAudioContextRef.current.destination);
                     },
                     onmessage: async (message: LiveServerMessage) => {
-                        // Handle transcription
+                        let hasUserInput = false;
+                        let hasModelOutput = false;
+
                         if (message.serverContent?.inputTranscription) {
                             currentInputTranscriptionRef.current += message.serverContent.inputTranscription.text;
-                            setIsModelSpeaking(true);
+                            hasUserInput = true;
                         }
                         if (message.serverContent?.outputTranscription) {
                             currentOutputTranscriptionRef.current += message.serverContent.outputTranscription.text;
+                            hasModelOutput = true;
                         }
+                        
+                        const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+                        if (audioData) {
+                            hasModelOutput = true;
+                            if (outputAudioContextRef.current) {
+                                const audioContext = outputAudioContextRef.current;
+                                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, audioContext.currentTime);
+                                const audioBuffer = await decodeAudioData(decode(audioData), audioContext, 24000, 1);
+                                const source = audioContext.createBufferSource();
+                                source.buffer = audioBuffer;
+                                source.connect(audioContext.destination);
+                                source.addEventListener('ended', () => audioSourcesRef.current.delete(source));
+                                source.start(nextStartTimeRef.current);
+                                nextStartTimeRef.current += audioBuffer.duration;
+                                audioSourcesRef.current.add(source);
+                            }
+                        }
+
+                        if (hasUserInput) setIsListening(true);
+                        if (hasModelOutput) {
+                            setIsListening(false);
+                            setIsModelSpeaking(true);
+                        }
+                        
+                        if (message.serverContent?.interrupted) {
+                            audioSourcesRef.current.forEach(source => source.stop());
+                            audioSourcesRef.current.clear();
+                            nextStartTimeRef.current = 0;
+                        }
+
                         if (message.serverContent?.turnComplete) {
                             const userInput = currentInputTranscriptionRef.current.trim();
                             const modelOutput = currentOutputTranscriptionRef.current.trim();
@@ -145,39 +184,27 @@ const App: React.FC = () => {
                             });
                             currentInputTranscriptionRef.current = '';
                             currentOutputTranscriptionRef.current = '';
+                            setIsListening(false);
                             setIsModelSpeaking(false);
                         }
-
-                        // Handle audio playback
-                        const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-                        if (audioData && outputAudioContextRef.current) {
-                            const audioContext = outputAudioContextRef.current;
-                            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, audioContext.currentTime);
-                            const audioBuffer = await decodeAudioData(decode(audioData), audioContext, 24000, 1);
-                            const source = audioContext.createBufferSource();
-                            source.buffer = audioBuffer;
-                            source.connect(audioContext.destination);
-                            source.addEventListener('ended', () => audioSourcesRef.current.delete(source));
-                            source.start(nextStartTimeRef.current);
-                            nextStartTimeRef.current += audioBuffer.duration;
-                            audioSourcesRef.current.add(source);
-                        }
-                        
-                        if (message.serverContent?.interrupted) {
-                            audioSourcesRef.current.forEach(source => source.stop());
-                            audioSourcesRef.current.clear();
-                            nextStartTimeRef.current = 0;
-                        }
                     },
-                    onerror: (e: ErrorEvent) => console.error('Session error:', e),
+                    onerror: (e: ErrorEvent) => {
+                        console.error('Session error:', e)
+                        setSessionError("Connection error. Please try again.");
+                        handleToggleSession();
+                    },
                     onclose: (e: CloseEvent) => console.log('Session closed'),
                 }
             });
 
         } catch (err) {
             console.error("Failed to start session:", err);
+            if (err instanceof Error) {
+                setSessionError(`Error: ${err.message}. Please check permissions and API key.`);
+            } else {
+                setSessionError("An unknown error occurred while starting the session.");
+            }
             setIsSessionActive(false);
-            // Consider adding user-facing error state
         }
     };
 
@@ -196,7 +223,6 @@ const App: React.FC = () => {
         });
     }, [isSessionActive]);
     
-    // Cleanup on unmount
     useEffect(() => {
         return () => {
             if (sessionPromiseRef.current) {
@@ -223,12 +249,22 @@ const App: React.FC = () => {
                                 ? 'bg-red-500 hover:bg-red-600 focus:ring-red-400' 
                                 : 'bg-indigo-500 hover:bg-indigo-600 focus:ring-indigo-400'
                         }`}
+                        disabled={isSessionActive && (isListening || isModelSpeaking)}
                     >
                         {isSessionActive ? <StopCircleIcon className="h-5 w-5 mr-2" /> : <CameraIcon className="h-5 w-5 mr-2" />}
                         {isSessionActive ? 'Stop Session' : 'Start Session'}
                     </button>
                 </div>
             </header>
+            
+            {sessionError && (
+                <div className="container mx-auto px-4 pt-4">
+                    <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative" role="alert">
+                        <strong className="font-bold">Error: </strong>
+                        <span className="block sm:inline">{sessionError}</span>
+                    </div>
+                </div>
+            )}
 
             <main className="container mx-auto p-4 md:p-8">
                 <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
@@ -236,7 +272,7 @@ const App: React.FC = () => {
                         <WebcamFeed stream={videoStream} onFrame={handleFrame} error={cameraError} />
                     </div>
                     <div className="lg:col-span-2">
-                        <SuggestionBox transcript={transcript} isModelSpeaking={isModelSpeaking} />
+                        <SuggestionBox transcript={transcript} isModelSpeaking={isModelSpeaking} isListening={isListening} />
                     </div>
                 </div>
             </main>
