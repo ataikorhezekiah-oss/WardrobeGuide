@@ -53,13 +53,24 @@ const App: React.FC = () => {
                 micStreamRef.current.getTracks().forEach(track => track.stop());
                 micStreamRef.current = null;
             }
+            
+            audioSourcesRef.current.forEach(source => source.stop());
+            audioSourcesRef.current.clear();
+            nextStartTimeRef.current = 0;
+
             if(scriptProcessorRef.current) {
               scriptProcessorRef.current.disconnect();
               scriptProcessorRef.current = null;
             }
             if(inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
               inputAudioContextRef.current.close();
+              inputAudioContextRef.current = null;
             }
+             if(outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
+              outputAudioContextRef.current.close();
+              outputAudioContextRef.current = null;
+            }
+
 
             setIsSessionActive(false);
             setTranscript([]);
@@ -77,8 +88,10 @@ const App: React.FC = () => {
 
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             
-            // FIX: Correctly instantiate AudioContext with vendor prefix for Safari to resolve TypeScript compilation error.
             outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+            if (outputAudioContextRef.current.state === 'suspended') {
+                outputAudioContextRef.current.resume();
+            }
 
             sessionPromiseRef.current = ai.live.connect({
                 model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -93,7 +106,6 @@ const App: React.FC = () => {
                 },
                 callbacks: {
                     onopen: () => {
-                        // FIX: Correctly instantiate AudioContext with vendor prefix for Safari to resolve TypeScript compilation error.
                         inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
                         const source = inputAudioContextRef.current.createMediaStreamSource(micStream);
                         scriptProcessorRef.current = inputAudioContextRef.current.createScriptProcessor(4096, 1, 1);
