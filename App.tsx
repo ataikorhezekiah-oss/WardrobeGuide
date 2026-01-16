@@ -7,6 +7,10 @@ import { CameraIcon, StopCircleIcon } from './components/Icons';
 import { useCamera } from './hooks/useCamera';
 import { encode, decode, decodeAudioData } from './utils/audio';
 
+// FIX: Removed the conflicting global declaration for `window.aistudio`.
+// The TypeScript error indicates that this property is already typed globally,
+// and this redeclaration was causing a type conflict.
+
 const PROMPT = `You are a world-class AI fashion stylist having a friendly, real-time voice conversation. Your goal is to provide helpful, concise, and encouraging feedback on a user's outfit as you see it through their camera. Keep your responses short and conversational.
 
 Analyze the outfit in the image and comment on what you see. Provide actionable suggestions for improvement. Acknowledge the user's speech and respond naturally.
@@ -18,7 +22,46 @@ interface TranscriptItem {
     text: string;
 }
 
+// Component for API Key selection
+const ApiKeySelectionScreen: React.FC<{ onSelectApiKey: () => void; error?: string | null }> = ({ onSelectApiKey, error }) => (
+    <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
+        <div className="w-full max-w-md bg-white dark:bg-gray-800 p-8 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700">
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+                <span className="text-indigo-500">AI</span> Wardrobe Guide
+            </h1>
+            <p className="mt-4 text-gray-600 dark:text-gray-300">
+                This application requires a Google AI API key to function. Please select a key from a paid Google Cloud project.
+            </p>
+            <a 
+                href="https://ai.google.dev/gemini-api/docs/billing" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="mt-2 inline-block text-sm text-indigo-500 hover:underline"
+            >
+                Learn more about billing
+            </a>
+            
+            {error && (
+                <div className="mt-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">
+                    <p>{error}</p>
+                </div>
+            )}
+
+            <button
+                onClick={onSelectApiKey}
+                className="mt-6 w-full flex items-center justify-center px-4 py-2 rounded-lg font-semibold text-white bg-indigo-500 hover:bg-indigo-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-indigo-400 transition-colors duration-300"
+            >
+                Select API Key
+            </button>
+        </div>
+    </div>
+);
+
+
 const App: React.FC = () => {
+    // API Key State
+    const [apiKeySelected, setApiKeySelected] = useState(false);
+    
     // Media and Camera
     const { stream: videoStream, error: cameraError, startCamera, stopCamera } = useCamera();
     const micStreamRef = useRef<MediaStream | null>(null);
@@ -42,51 +85,82 @@ const App: React.FC = () => {
     const inputAudioContextRef = useRef<AudioContext | null>(null);
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
+    // Check for API key on mount
+    useEffect(() => {
+        const checkApiKey = async () => {
+            if (window.aistudio) {
+                try {
+                    const hasKey = await window.aistudio.hasSelectedApiKey();
+                    setApiKeySelected(hasKey);
+                } catch (e) {
+                    console.error("Error checking for API key:", e);
+                    setApiKeySelected(false);
+                }
+            } else {
+                console.warn("window.aistudio is not available.");
+            }
+        };
+        checkApiKey();
+    }, []);
+
+    const handleSelectApiKey = async () => {
+        if (window.aistudio) {
+            try {
+                await window.aistudio.openSelectKey();
+                setApiKeySelected(true);
+                setSessionError(null);
+            } catch (e) {
+                console.error("Error opening API key selection:", e);
+                setSessionError("Could not open the API key selection dialog.");
+            }
+        }
+    };
+
+    const stopSession = useCallback(() => {
+        if (sessionPromiseRef.current) {
+            sessionPromiseRef.current.then(session => session.close());
+            sessionPromiseRef.current = null;
+        }
+        stopCamera();
+        if (micStreamRef.current) {
+            micStreamRef.current.getTracks().forEach(track => track.stop());
+            micStreamRef.current = null;
+        }
+        
+        audioSourcesRef.current.forEach(source => source.stop());
+        audioSourcesRef.current.clear();
+        nextStartTimeRef.current = 0;
+
+        if(scriptProcessorRef.current) {
+          scriptProcessorRef.current.disconnect();
+          scriptProcessorRef.current = null;
+        }
+        if(inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
+          inputAudioContextRef.current.close().catch(console.error);
+          inputAudioContextRef.current = null;
+        }
+         if(outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
+          outputAudioContextRef.current.close().catch(console.error);
+          outputAudioContextRef.current = null;
+        }
+
+        setIsSessionActive(false);
+        setTranscript([]);
+        setIsListening(false);
+        setIsModelSpeaking(false);
+    }, [stopCamera]);
 
     const handleToggleSession = async () => {
         if (isSessionActive) {
-            // Stop session
-            if (sessionPromiseRef.current) {
-                sessionPromiseRef.current.then(session => session.close());
-                sessionPromiseRef.current = null;
-            }
-            stopCamera();
-            if (micStreamRef.current) {
-                micStreamRef.current.getTracks().forEach(track => track.stop());
-                micStreamRef.current = null;
-            }
-            
-            audioSourcesRef.current.forEach(source => source.stop());
-            audioSourcesRef.current.clear();
-            nextStartTimeRef.current = 0;
-
-            if(scriptProcessorRef.current) {
-              scriptProcessorRef.current.disconnect();
-              scriptProcessorRef.current = null;
-            }
-            if(inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
-              inputAudioContextRef.current.close();
-              inputAudioContextRef.current = null;
-            }
-             if(outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
-              outputAudioContextRef.current.close();
-              outputAudioContextRef.current = null;
-            }
-
-
-            setIsSessionActive(false);
-            setTranscript([]);
-            setIsListening(false);
-            setIsModelSpeaking(false);
+            stopSession();
             setSessionError(null);
             return;
         }
 
-        // Start session
         setIsSessionActive(true);
         setTranscript([]);
         setSessionError(null);
-        startCamera(); // Start video feed
+        startCamera(); 
 
         try {
             const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -122,11 +196,9 @@ const App: React.FC = () => {
                                 data: encode(new Uint8Array(new Int16Array(inputData.map(f => f * 32768)).buffer)),
                                 mimeType: 'audio/pcm;rate=16000',
                             };
-                            if (sessionPromiseRef.current) {
-                                sessionPromiseRef.current.then((session) => {
-                                    session.sendRealtimeInput({ media: pcmBlob });
-                                });
-                            }
+                            sessionPromiseRef.current?.then((session) => {
+                                session.sendRealtimeInput({ media: pcmBlob });
+                            });
                         };
                         source.connect(scriptProcessorRef.current);
                         scriptProcessorRef.current.connect(inputAudioContextRef.current.destination);
@@ -189,22 +261,38 @@ const App: React.FC = () => {
                         }
                     },
                     onerror: (e: ErrorEvent) => {
-                        console.error('Session error:', e)
-                        setSessionError("Connection error. Please try again.");
-                        handleToggleSession();
+                        console.error('Session error:', e);
+                        const errorMessage = (e as any).message || (e as any).error?.message || '';
+                        
+                        if (errorMessage.includes('Requested entity was not found.')) {
+                            setSessionError("Your API key is invalid. Please select a new key from a project with billing enabled.");
+                            setApiKeySelected(false);
+                        } else if (errorMessage.includes('API Key not found')) {
+                            setSessionError("API Key not found. Please select an API key to continue.");
+                            setApiKeySelected(false);
+                        } else {
+                            setSessionError("A connection error occurred. Please try again.");
+                        }
+                        stopSession();
                     },
-                    onclose: (e: CloseEvent) => console.log('Session closed'),
+                    onclose: () => console.log('Session closed'),
                 }
             });
 
         } catch (err) {
             console.error("Failed to start session:", err);
             if (err instanceof Error) {
-                setSessionError(`Error: ${err.message}. Please check permissions and API key.`);
+                 if (err.message.includes('API Key must be set')) {
+                    setSessionError("An API Key is required. Please select one to continue.");
+                    setApiKeySelected(false);
+                } else {
+                    setSessionError(`Error: ${err.message}. Please check permissions.`);
+                }
             } else {
                 setSessionError("An unknown error occurred while starting the session.");
             }
             setIsSessionActive(false);
+            stopCamera();
         }
     };
 
@@ -225,15 +313,13 @@ const App: React.FC = () => {
     
     useEffect(() => {
         return () => {
-            if (sessionPromiseRef.current) {
-                sessionPromiseRef.current.then(session => session.close());
-            }
-            stopCamera();
-             if (micStreamRef.current) {
-                micStreamRef.current.getTracks().forEach(track => track.stop());
-            }
+            stopSession();
         };
-    }, [stopCamera]);
+    }, [stopSession]);
+
+    if (!apiKeySelected) {
+        return <ApiKeySelectionScreen onSelectApiKey={handleSelectApiKey} error={sessionError} />;
+    }
 
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans">
@@ -249,7 +335,6 @@ const App: React.FC = () => {
                                 ? 'bg-red-500 hover:bg-red-600 focus:ring-red-400' 
                                 : 'bg-indigo-500 hover:bg-indigo-600 focus:ring-indigo-400'
                         }`}
-                        disabled={isSessionActive && (isListening || isModelSpeaking)}
                     >
                         {isSessionActive ? <StopCircleIcon className="h-5 w-5 mr-2" /> : <CameraIcon className="h-5 w-5 mr-2" />}
                         {isSessionActive ? 'Stop Session' : 'Start Session'}
@@ -257,7 +342,7 @@ const App: React.FC = () => {
                 </div>
             </header>
             
-            {sessionError && (
+            {sessionError && !apiKeySelected && (
                 <div className="container mx-auto px-4 pt-4">
                     <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative" role="alert">
                         <strong className="font-bold">Error: </strong>
