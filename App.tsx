@@ -3,7 +3,8 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { GoogleGenAI, LiveSession, LiveServerMessage, Modality, Blob } from '@google/genai';
 import { WebcamFeed } from './components/WebcamFeed';
 import { SuggestionBox } from './components/SuggestionBox';
-import { CameraIcon, StopCircleIcon } from './components/Icons';
+import { ApiKeySetup } from './components/ApiKeySetup';
+import { CameraIcon, StopCircleIcon, KeyIcon } from './components/Icons';
 import { useCamera } from './hooks/useCamera';
 import { encode, decode, decodeAudioData } from './utils/audio';
 
@@ -19,6 +20,8 @@ interface TranscriptItem {
 }
 
 const App: React.FC = () => {
+    const [apiKey, setApiKey] = useState<string | null>(null);
+
     // Media and Camera
     const { stream: videoStream, error: cameraError, startCamera, stopCamera } = useCamera();
     const micStreamRef = useRef<MediaStream | null>(null);
@@ -42,9 +45,30 @@ const App: React.FC = () => {
     const inputAudioContextRef = useRef<AudioContext | null>(null);
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
+    useEffect(() => {
+        const storedKey = localStorage.getItem('gemini-api-key');
+        if (storedKey) {
+            setApiKey(storedKey);
+        }
+    }, []);
+
+    const handleApiKeySubmit = (key: string) => {
+        const trimmedKey = key.trim();
+        if (trimmedKey) {
+            setApiKey(trimmedKey);
+            localStorage.setItem('gemini-api-key', trimmedKey);
+        }
+    };
+
+    const handleResetApiKey = () => {
+        stopSession();
+        setApiKey(null);
+        localStorage.removeItem('gemini-api-key');
+    };
+
     const stopSession = useCallback(() => {
         if (sessionPromiseRef.current) {
-            sessionPromiseRef.current.then(session => session.close());
+            sessionPromiseRef.current.then(session => session.close()).catch(console.error);
             sessionPromiseRef.current = null;
         }
         stopCamera();
@@ -63,11 +87,9 @@ const App: React.FC = () => {
         }
         if(inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
           inputAudioContextRef.current.close().catch(console.error);
-          inputAudioContextRef.current = null;
         }
          if(outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
           outputAudioContextRef.current.close().catch(console.error);
-          outputAudioContextRef.current = null;
         }
 
         setIsSessionActive(false);
@@ -83,6 +105,11 @@ const App: React.FC = () => {
             return;
         }
 
+        if (!apiKey) {
+            setSessionError("API Key is not set. Please set your API key.");
+            return;
+        }
+
         setIsSessionActive(true);
         setTranscript([]);
         setSessionError(null);
@@ -92,11 +119,11 @@ const App: React.FC = () => {
             const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             micStreamRef.current = micStream;
 
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const ai = new GoogleGenAI({ apiKey });
             
             outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
             if (outputAudioContextRef.current.state === 'suspended') {
-                outputAudioContextRef.current.resume();
+                await outputAudioContextRef.current.resume();
             }
 
             sessionPromiseRef.current = ai.live.connect({
@@ -124,6 +151,10 @@ const App: React.FC = () => {
                             };
                             sessionPromiseRef.current?.then((session) => {
                                 session.sendRealtimeInput({ media: pcmBlob });
+                            }).catch(err => {
+                                console.error("Error sending realtime input:", err);
+                                setSessionError("Failed to send audio data. The session might have closed.");
+                                stopSession();
                             });
                         };
                         source.connect(scriptProcessorRef.current);
@@ -143,20 +174,18 @@ const App: React.FC = () => {
                         }
                         
                         const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-                        if (audioData) {
+                        if (audioData && outputAudioContextRef.current) {
                             hasModelOutput = true;
-                            if (outputAudioContextRef.current) {
-                                const audioContext = outputAudioContextRef.current;
-                                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, audioContext.currentTime);
-                                const audioBuffer = await decodeAudioData(decode(audioData), audioContext, 24000, 1);
-                                const source = audioContext.createBufferSource();
-                                source.buffer = audioBuffer;
-                                source.connect(audioContext.destination);
-                                source.addEventListener('ended', () => audioSourcesRef.current.delete(source));
-                                source.start(nextStartTimeRef.current);
-                                nextStartTimeRef.current += audioBuffer.duration;
-                                audioSourcesRef.current.add(source);
-                            }
+                            const audioContext = outputAudioContextRef.current;
+                            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, audioContext.currentTime);
+                            const audioBuffer = await decodeAudioData(decode(audioData), audioContext, 24000, 1);
+                            const source = audioContext.createBufferSource();
+                            source.buffer = audioBuffer;
+                            source.connect(audioContext.destination);
+                            source.addEventListener('ended', () => audioSourcesRef.current.delete(source));
+                            source.start(nextStartTimeRef.current);
+                            nextStartTimeRef.current += audioBuffer.duration;
+                            audioSourcesRef.current.add(source);
                         }
 
                         if (hasUserInput) setIsListening(true);
@@ -198,11 +227,15 @@ const App: React.FC = () => {
 
         } catch (err) {
             console.error("Failed to start session:", err);
+            let errorMessage = "An unknown error occurred while starting the session.";
             if (err instanceof Error) {
-                setSessionError(`Error: ${err.message}. Please check permissions and API Key.`);
-            } else {
-                setSessionError("An unknown error occurred while starting the session.");
+                errorMessage = `Error: ${err.message}. Please check permissions and your API Key.`;
             }
+            // Check for common API key error messages
+            if (typeof err === 'string' && err.includes("API key not valid")) {
+                errorMessage = "The provided API Key is not valid. Please reset it and try again.";
+            }
+            setSessionError(errorMessage);
             setIsSessionActive(false);
             stopCamera();
         }
@@ -220,6 +253,8 @@ const App: React.FC = () => {
 
         sessionPromiseRef.current.then(session => {
             session.sendRealtimeInput({ media: imageBlob });
+        }).catch(err => {
+             console.error("Error sending frame:", err);
         });
     }, [isSessionActive]);
     
@@ -229,6 +264,10 @@ const App: React.FC = () => {
         };
     }, [stopSession]);
 
+    if (!apiKey) {
+        return <ApiKeySetup onApiKeySubmit={handleApiKeySubmit} />;
+    }
+
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans">
             <header className="bg-white dark:bg-gray-800 shadow-md">
@@ -236,17 +275,27 @@ const App: React.FC = () => {
                     <h1 className="text-xl md:text-2xl font-bold text-gray-900 dark:text-white tracking-tight">
                         <span className="text-indigo-500">AI</span> Wardrobe Guide
                     </h1>
-                    <button
-                        onClick={handleToggleSession}
-                        className={`flex items-center justify-center px-4 py-2 rounded-lg font-semibold text-white transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 ${
-                            isSessionActive 
-                                ? 'bg-red-500 hover:bg-red-600 focus:ring-red-400' 
-                                : 'bg-indigo-500 hover:bg-indigo-600 focus:ring-indigo-400'
-                        }`}
-                    >
-                        {isSessionActive ? <StopCircleIcon className="h-5 w-5 mr-2" /> : <CameraIcon className="h-5 w-5 mr-2" />}
-                        {isSessionActive ? 'Stop Session' : 'Start Session'}
-                    </button>
+                    <div className="flex items-center space-x-3">
+                        <button
+                            onClick={handleResetApiKey}
+                            title="Reset API Key"
+                            className="p-2 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-indigo-400"
+                            aria-label="Reset API Key"
+                        >
+                            <KeyIcon className="h-5 w-5" />
+                        </button>
+                        <button
+                            onClick={handleToggleSession}
+                            className={`flex items-center justify-center px-4 py-2 rounded-lg font-semibold text-white transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 ${
+                                isSessionActive 
+                                    ? 'bg-red-500 hover:bg-red-600 focus:ring-red-400' 
+                                    : 'bg-indigo-500 hover:bg-indigo-600 focus:ring-indigo-400'
+                            }`}
+                        >
+                            {isSessionActive ? <StopCircleIcon className="h-5 w-5 mr-2" /> : <CameraIcon className="h-5 w-5 mr-2" />}
+                            {isSessionActive ? 'Stop Session' : 'Start Session'}
+                        </button>
+                    </div>
                 </div>
             </header>
             
